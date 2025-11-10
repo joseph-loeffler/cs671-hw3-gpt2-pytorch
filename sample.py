@@ -20,6 +20,7 @@ train_loader, test_loader, vocab_size, stoi, itos = get_dataloaders(
 
 model = Transformer(vocab_size=vocab_size, block_size=block_size, embed_dim=embed_dim, n_layer=n_layer)
 # model = torch.load("model.pt", weights_only=False)
+model = torch.load("model.pt", map_location=device, weights_only=False)
 
 model.eval() 
 context = torch.zeros((1, 1), dtype=torch.long, device=device)  # Start with empty context

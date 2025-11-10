@@ -18,13 +18,45 @@ class SelfAttention(nn.Module):
     self.map_qkv = nn.Linear(embed_dim, 3 * embed_dim)   # old self.c_attn
 
     self.n_head = n_head
-    self.mask = torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size)
+    # register mask as a buffer so it moves with the model/device
+    self.register_buffer('mask', torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size))
+    # projection for concatenated heads back to embed_dim (missing in original edit)
+    self.c_proj = nn.Linear(embed_dim, embed_dim)
     self.embed_dim = embed_dim
 
   def forward(self, x): 
     B, T, C = x.size() # batch size, sequence length, embedding dimensionality (embed_dim)
     ...
-    y = torch.randn_like(x)
+    # i. partition it into the query, key, value matrices, each of size B×L×C
+    qkv = self.map_qkv(x)
+    q, k, v = qkv.chunk(3, dim=2) 
+
+    # ii. partition each matrix into H submatrices, add an extra rank to change the 
+    # shape of each matrix from (B×L×C) →(B×H×L×C/H)
+    H = self.n_head
+    C_head = C // H
+    q = q.reshape(B, T, H, C_head).permute(0, 2, 1, 3)  # -> (B, H, T, C_head)
+    k = k.reshape(B, T, H, C_head).permute(0, 2, 1, 3)
+    v = v.reshape(B, T, H, C_head).permute(0, 2, 1, 3)
+
+    # iii. implement operation (3) (what goes inside the softmax)
+    scores = torch.matmul(q, k.transpose(-2, -1)) / (C_head ** 0.5)  # (B, H, T, T)
+    assert scores.shape == (B, H, T, T) # sanity check
+
+    # iv. mask the output (decoder architecture)
+    mask = self.mask[:, :, :T, :T].to(x.device)
+    scores = scores.masked_fill(mask == 0, float('-inf'))  # -inf bc softmax(-inf) = 0
+
+    # v. apply softmax and multiply by V
+    att = F.softmax(scores, dim=-1)      # (B, H, T, T)
+    y = torch.matmul(att, v)          # (B, H, T, C_head)
+
+    # combine heads: (B, H, T, C_head) -> (B, T, H * C_head)
+    y = y.permute(0, 2, 1, 3).contiguous().view(B, T, C)
+
+    # project back to embedding dimension (important for learning capacity)
+    y = self.c_proj(y)
+
     assert y.shape == (B, T, C)
     return y
 
